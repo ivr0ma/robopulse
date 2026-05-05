@@ -1,3 +1,6 @@
 /data
 /prompts
 .venv
+__pycache__/
+*.pyc
+.env

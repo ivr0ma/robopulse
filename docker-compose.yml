@@ -1,0 +1,157 @@
+version: "3.8"
+
+x-airflow-common: &airflow-common
+  build: ./airflow
+  environment: &airflow-env
+    AIRFLOW__CORE__EXECUTOR: LocalExecutor
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    AIRFLOW__CORE__FERNET_KEY: "46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqDDho="
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+    AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth"
+    AIRFLOW__WEBSERVER__SECRET_KEY: "robopulse-secret-42"
+    # MinIO
+    MINIO_ENDPOINT: "http://minio:9000"
+    MINIO_ACCESS_KEY: "${MINIO_ROOT_USER:-minioadmin}"
+    MINIO_SECRET_KEY: "${MINIO_ROOT_PASSWORD:-minioadmin123}"
+    MINIO_BUCKET: "robopulse"
+    # Spark connection: хук строит master как "{host}:{port}", поэтому схема в host
+    AIRFLOW_CONN_SPARK_DEFAULT: '{"conn_type": "spark", "host": "spark://spark-master", "port": 7077}'
+    # Java
+    JAVA_HOME: "/usr/lib/jvm/java-17-openjdk-amd64"
+  volumes:
+    - ./airflow/dags:/opt/airflow/dags
+    - ./spark/jobs:/opt/airflow/spark_jobs
+    - ./generate_data.py:/opt/airflow/generate_data.py:ro
+    - airflow_logs:/opt/airflow/logs
+    - airflow_plugins:/opt/airflow/plugins
+  depends_on:
+    postgres:
+      condition: service_healthy
+  networks:
+    - robopulse_net
+
+services:
+
+  # ── Postgres (Airflow metadata) ──────────────────────────────────────────────
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - robopulse_net
+
+  # ── MinIO (S3-совместимое хранилище) ────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: "${MINIO_ROOT_USER:-minioadmin}"
+      MINIO_ROOT_PASSWORD: "${MINIO_ROOT_PASSWORD:-minioadmin123}"
+    ports:
+      - "9000:9000"   # S3 API
+      - "9001:9001"   # Web console
+    volumes:
+      - minio_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - robopulse_net
+
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 ${MINIO_ROOT_USER:-minioadmin} ${MINIO_ROOT_PASSWORD:-minioadmin123} &&
+        mc mb --ignore-existing local/robopulse &&
+        echo 'Bucket robopulse ready.'
+      "
+    networks:
+      - robopulse_net
+
+  # ── Spark ────────────────────────────────────────────────────────────────────
+  spark-master:
+    build: ./spark
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
+    environment:
+      SPARK_NO_DAEMONIZE: "true"
+      SPARK_MASTER_HOST: spark-master
+    ports:
+      - "8080:8080"   # Spark Master Web UI
+      - "7077:7077"   # Spark master port
+    volumes:
+      - ./spark/jobs:/opt/spark/jobs
+    networks:
+      - robopulse_net
+
+  spark-worker:
+    build: ./spark
+    command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
+    environment:
+      SPARK_NO_DAEMONIZE: "true"
+      SPARK_WORKER_MEMORY: "6g"
+      SPARK_WORKER_CORES: "4"
+    depends_on:
+      - spark-master
+    volumes:
+      - ./spark/jobs:/opt/spark/jobs
+    networks:
+      - robopulse_net
+
+  # ── Airflow ──────────────────────────────────────────────────────────────────
+  airflow-init:
+    <<: *airflow-common
+    command: bash -c "airflow db migrate && airflow users create --username admin --password admin --firstname Admin --lastname User --role Admin --email admin@robopulse.local && echo 'Airflow initialized.'"
+    restart: "no"
+
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8081:8080"   # Airflow Web UI
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    restart: unless-stopped
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      postgres:
+        condition: service_healthy
+
+networks:
+  robopulse_net:
+    driver: bridge
+
+volumes:
+  postgres_data:
+  minio_data:
+  airflow_logs:
+  airflow_plugins:
