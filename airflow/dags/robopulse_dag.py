@@ -18,8 +18,8 @@ from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOpe
 # ── Константы ─────────────────────────────────────────────────────────────────
 
 MINIO_ENDPOINT = os.environ.get("MINIO_ENDPOINT", "http://minio:9000")
-MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "minioadmin")
-MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "minioadmin123")
+MINIO_ACCESS_KEY = os.environ.get("MINIO_ACCESS_KEY", "***")
+MINIO_SECRET_KEY = os.environ.get("MINIO_SECRET_KEY", "***")
 MINIO_BUCKET = os.environ.get("MINIO_BUCKET", "robopulse")
 
 BRONZE_S3 = f"s3a://{MINIO_BUCKET}/bronze"
