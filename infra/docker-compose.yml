@@ -86,7 +86,7 @@ services:
 
   # ── Spark ────────────────────────────────────────────────────────────────────
   spark-master:
-    build: ./spark
+    build: ../spark
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
     environment:
       SPARK_NO_DAEMONIZE: "true"
@@ -100,7 +100,7 @@ services:
       - robopulse_net
 
   spark-worker:
-    build: ./spark
+    build: ../spark
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     environment:
       SPARK_NO_DAEMONIZE: "true"

@@ -106,7 +106,7 @@ with DAG(
 
     t_silver = SparkSubmitOperator(
         task_id="process_silver",
-        application="/opt/airflow/spark_jobs/silver_job.py",
+        application="/opt/airflow/spark_jobs/normalize_robot_operational_data.py",
         conn_id="spark_default",
         jars=JARS,
         conf=SPARK_CONF,
@@ -119,7 +119,7 @@ with DAG(
 
     t_gold = SparkSubmitOperator(
         task_id="process_gold",
-        application="/opt/airflow/spark_jobs/gold_job.py",
+        application="/opt/airflow/spark_jobs/build_robot_reliability_features.py",
         conn_id="spark_default",
         jars=JARS,
         conf=SPARK_CONF,

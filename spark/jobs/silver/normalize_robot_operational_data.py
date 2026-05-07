@@ -2,16 +2,13 @@
 PySpark Silver job: Bronze (JSON/JSONL в S3) → нормализованные Parquet-партиции.
 
 Запуск:
-    spark-submit silver_job.py s3a://robopulse/bronze s3a://robopulse/silver
+    spark-submit normalize_robot_operational_data.py s3a://robopulse/bronze s3a://robopulse/silver
 """
 import sys
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
-
-
-def build_spark() -> SparkSession:
-    return SparkSession.builder.appName("robopulse-silver").getOrCreate()
+from spark.common.spark_session import build_spark
 
 
 def silver_maintenance_events(spark: SparkSession, bronze: str, silver: str) -> int:
@@ -168,7 +165,7 @@ def silver_robot_status(spark: SparkSession, bronze: str, silver: str) -> int:
 
 def main() -> None:
     if len(sys.argv) != 3:
-        print("Usage: silver_job.py <bronze_path> <silver_path>")
+        print("Usage: normalize_robot_operational_data.py <bronze_path> <silver_path>")
         sys.exit(1)
 
     bronze, silver = sys.argv[1], sys.argv[2]

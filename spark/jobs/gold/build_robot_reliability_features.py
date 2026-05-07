@@ -6,16 +6,13 @@ PySpark Gold job: Silver (Parquet в S3) → feature dataset для ML.
 Горизонт цели: 30 дней вперёд.
 
 Запуск:
-    spark-submit gold_job.py s3a://robopulse/silver s3a://robopulse/gold
+    spark-submit build_robot_reliability_features.py s3a://robopulse/silver s3a://robopulse/gold
 """
 import sys
 from pyspark.sql import SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.window import Window
-
-
-def build_spark() -> SparkSession:
-    return SparkSession.builder.appName("robopulse-gold").getOrCreate()
+from spark.common.spark_session import build_spark
 
 
 def build_gold(spark: SparkSession, silver: str, gold: str) -> int:
@@ -200,7 +197,7 @@ def build_gold(spark: SparkSession, silver: str, gold: str) -> int:
 
 def main() -> None:
     if len(sys.argv) != 3:
-        print("Usage: gold_job.py <silver_path> <gold_path>")
+        print("Usage: build_robot_reliability_features.py <silver_path> <gold_path>")
         sys.exit(1)
 
     silver, gold = sys.argv[1], sys.argv[2]
