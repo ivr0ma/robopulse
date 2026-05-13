@@ -39,20 +39,27 @@ End-to-end pipeline предиктивного обслуживания робо
 
 ```
 robopulse/
-├── docker-compose.yml          # Все сервисы: Airflow, Spark, MinIO, Postgres
+├── infra/
+│   └── docker-compose.yml      # Все сервисы: Airflow, Spark, MinIO, Postgres
 ├── .env                        # Credentials (не коммитится)
 ├── Makefile                    # Удобные команды (up, down, trigger, logs, ...)
 │
 ├── airflow/
-│   ├── Dockerfile              # Airflow + Java + pyspark + boto3
 │   └── dags/
-│       └── robopulse_dag.py    # DAG: Bronze upload → Silver → Gold
+│       └── robopulse_dag.py    # DAG'и: source, silver, gold, pipeline
+│
+├── docker/
+│   ├── airflow/Dockerfile      # Airflow + Java + pyspark + boto3
+│   └── spark/Dockerfile        # apache/spark:3.5.5 + hadoop-aws JARs
 │
 ├── spark/
-│   ├── Dockerfile              # apache/spark:3.5.5 + hadoop-aws JARs
+│   ├── common/
+│   │   └── spark_session.py
 │   └── jobs/
-│       ├── silver_job.py       # PySpark: Bronze (JSON/JSONL) → Silver (Parquet)
-│       └── gold_job.py         # PySpark: Silver → Gold feature dataset
+│       ├── silver/
+│       │   └── normalize_robot_operational_data.py
+│       └── gold/
+│           └── build_robot_reliability_features.py
 │
 ├── generate_data.py            # Генератор синтетических Bronze-данных
 ├── process_silver.py           # Bronze → Silver на DuckDB (локальный вариант)
@@ -76,8 +83,8 @@ robopulse/
 │  │  Scheduler   │───▶│   Worker     │───▶│  s3://robopulse/  │  │
 │  │ (LocalExec.) │    │  (6G / 4CPU) │    │  bronze/          │  │
 │  └──────────────┘    └──────────────┘    │  silver/          │  │
-│         │                               │  gold/            │  │
-│  ┌──────┴───────┐                       └───────────────────┘  │
+│         │                                │  gold/            │  │
+│  ┌──────┴───────┐                        └───────────────────┘  │
 │  │  PostgreSQL  │                                               │
 │  │ (Airflow DB) │                                               │
 │  └──────────────┘                                               │
@@ -85,9 +92,10 @@ robopulse/
 ```
 
 **Поток данных:**
-1. `generate_and_upload_bronze` — Airflow PythonOperator генерирует синтетические JSON/JSONL и загружает их в MinIO (`s3://robopulse/bronze/`)
-2. `process_silver` — SparkSubmitOperator запускает `silver_job.py`: нормализует Bronze в типизированный Parquet (`s3://robopulse/silver/`)
-3. `process_gold` — SparkSubmitOperator запускает `gold_job.py`: строит feature dataset для ML (`s3://robopulse/gold/`)
+1. `robopulse_source` — Airflow PythonOperator генерирует синтетическую Bronze-партицию и загружает её в MinIO (`s3://robopulse/bronze/`)
+2. `robopulse_silver` — SparkSubmitOperator запускает `normalize_robot_operational_data.py`: нормализует одну Bronze-партицию в типизированный Parquet (`s3://robopulse/silver/`)
+3. `robopulse_gold` — SparkSubmitOperator запускает `build_robot_reliability_features.py`: строит Gold-партицию признаков (`s3://robopulse/gold/`)
+4. `robopulse_pipeline` — управляющий DAG, последовательно запускающий три DAG выше через TriggerDagRunOperator
 
 ---
 
@@ -178,7 +186,7 @@ s3://robopulse/bronze/
 
 Типизированные Parquet-партиции `dt=YYYY-MM-DD/`.  
 Нормализация: типы, snake_case имена, дедупликация, выравнивание вложенных структур.  
-Реализована на **PySpark** (`spark/jobs/silver_job.py`).
+Реализована на **PySpark** (`spark/jobs/silver/normalize_robot_operational_data.py`).
 
 ```
 s3://robopulse/silver/
@@ -194,7 +202,7 @@ s3://robopulse/silver/
 ### Gold
 
 Feature dataset для ML — одна строка на `(robot, feature_date)`.  
-Реализован на **Spark SQL** (`spark/jobs/gold_job.py`).
+Реализован на **Spark SQL** (`spark/jobs/gold/build_robot_reliability_features.py`).
 
 ```
 s3://robopulse/gold/robot_features/part-*.snappy.parquet   (216 строк × 23 колонки)
@@ -277,7 +285,7 @@ cd robopulse
 
 ```bash
 # Собрать образы и запустить все сервисы
-sudo docker compose up -d --build
+sudo docker compose -f infra/docker-compose.yml -p robopulse up -d --build
 ```
 
 Что происходит:
@@ -290,7 +298,7 @@ sudo docker compose up -d --build
 Проверить состояние:
 
 ```bash
-sudo docker compose ps
+sudo docker compose -f infra/docker-compose.yml -p robopulse ps
 ```
 
 Все сервисы должны быть `healthy` или `running`.
@@ -298,10 +306,6 @@ sudo docker compose ps
 ### 4. Запуск пайплайна
 
 ```bash
-# Снять DAG с паузы и запустить
-sudo docker exec robopulse-airflow-scheduler-1 \
-  airflow dags unpause robopulse_pipeline
-
 sudo docker exec robopulse-airflow-scheduler-1 \
   airflow dags trigger robopulse_pipeline
 ```
@@ -316,7 +320,7 @@ sudo docker exec robopulse-airflow-scheduler-1 \
   airflow dags list-runs -d robopulse_pipeline
 
 # Логи планировщика в реальном времени
-sudo docker compose logs -f airflow-scheduler
+sudo docker compose -f infra/docker-compose.yml -p robopulse logs -f airflow-scheduler
 ```
 
 Ожидаемое время выполнения на рекомендуемом железе:

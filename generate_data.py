@@ -18,6 +18,7 @@ task_reports.json и описанию в maintenance_events.md.
 
 Запуск:
     python3 generate_data.py --days 180 --out ./data --seed 42
+    python3 generate_data.py --start-date 2026-04-30 --end-date 2026-04-30 --out ./data
 """
 
 from __future__ import annotations
@@ -132,6 +133,14 @@ WATER_CONSUME_PER_POLL = 2  # % расхода воды за один интер
 
 @dataclass
 class RobotState:
+    """
+    Хранит изменяемое состояние робота внутри синтетической симуляции.
+
+    Объект накапливает износ, заряд батареи, историю обслуживания и
+    эксплуатационные счётчики, чтобы последующие события зависели от
+    предыдущих действий робота.
+    """
+
     serial: str
     display_name: str
     model_family: str
@@ -165,6 +174,13 @@ def iso(dt: datetime) -> str:
 
 
 def write_json(path: Path, payload: Any) -> None:
+    """
+    Записывает JSON-файл с поддержкой русских символов.
+
+    Args:
+        path: Путь к создаваемому файлу.
+        payload: JSON-сериализуемые данные.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
@@ -248,6 +264,15 @@ def write_bronze_jsonl(
 
 
 def weighted_choice(pairs: list[tuple[Any, float]]) -> Any:
+    """
+    Выбирает значение с учетом заданных весов.
+
+    Args:
+        pairs: Список пар value/weight.
+
+    Returns:
+        Выбранное значение из входного списка.
+    """
     total = sum(w for _, w in pairs)
     r = random.random() * total
     acc = 0.0
@@ -256,6 +281,25 @@ def weighted_choice(pairs: list[tuple[Any, float]]) -> Any:
         if r <= acc:
             return value
     return pairs[-1][0]
+
+
+def parse_date_arg(value: str) -> datetime:
+    """
+    Преобразует CLI-дату в начало дня UTC.
+
+    Args:
+        value: Дата в формате YYYY-MM-DD.
+
+    Returns:
+        Datetime на 00:00:00 UTC указанного дня.
+    """
+    parsed = datetime.fromisoformat(value)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+
+    return parsed.astimezone(timezone.utc).replace(
+        hour=0, minute=0, second=0, microsecond=0,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -317,6 +361,15 @@ def generate_task(
 
     # consumablesResidualPercentage в % от срока службы
     def residual_pct(name: str) -> int:
+        """
+        Считает остаточный ресурс расходника в процентах.
+
+        Args:
+            name: Имя расходника в состоянии робота.
+
+        Returns:
+            Остаток ресурса от 0 до 100 процентов.
+        """
         used = state.used_life[name]
         life = CONSUMABLE_LIFESPANS[name]
         return max(0, int(round(100 - 100.0 * used / life)))
@@ -781,10 +834,37 @@ def emit_event(
 # Основной цикл симуляции
 # ---------------------------------------------------------------------------
 
-def simulate(days: int, out_dir: Path, seed: int) -> None:
+def simulate(
+    days: int,
+    out_dir: Path,
+    seed: int,
+    start_date_arg: str | None = None,
+    end_date_arg: str | None = None,
+) -> None:
+    """
+    Запускает генерацию Bronze-данных за заданный период.
+
+    Args:
+        days: Количество дней назад от конечной даты для старого режима.
+        out_dir: Корневой каталог вывода.
+        seed: Seed для воспроизводимой генерации.
+        start_date_arg: Опциональная начальная дата периода.
+        end_date_arg: Опциональная конечная дата периода.
+    """
     random.seed(seed)
-    end_date = datetime(2026, 5, 1, tzinfo=timezone.utc)
-    start_date = end_date - timedelta(days=days)
+    end_date = (
+        parse_date_arg(end_date_arg)
+        if end_date_arg
+        else datetime(2026, 5, 1, tzinfo=timezone.utc)
+    )
+    start_date = (
+        parse_date_arg(start_date_arg)
+        if start_date_arg
+        else end_date - timedelta(days=days)
+    )
+
+    if start_date > end_date:
+        raise ValueError("start-date должен быть меньше или равен end-date")
 
     # 1) Подготовить состояние роботов
     states: dict[str, RobotState] = {}
@@ -945,7 +1025,11 @@ def simulate(days: int, out_dir: Path, seed: int) -> None:
             by_type[e["maintenance_type"]] = by_type.get(e["maintenance_type"], 0) + 1
 
     print("=== Synthetic generation complete ===")
-    print(f"Period:              {start_date.date()} … {end_date.date()}  ({days} days, batch_id={batch_id})")
+    period_days = (end_date.date() - start_date.date()).days + 1
+    print(
+        f"Period:              {start_date.date()} … {end_date.date()}  "
+        f"({period_days} days, batch_id={batch_id})"
+    )
     print(f"Robots:              {len(states)}")
     print(f"Task reports:        {total_tasks}  ({len(tasks_by_day)} load_dt partitions)")
     print(f"Status polls:        {total_snaps}  ({len(status_by_day)} load_dt partitions,")
@@ -962,12 +1046,23 @@ def simulate(days: int, out_dir: Path, seed: int) -> None:
 # ---------------------------------------------------------------------------
 
 def main() -> None:
+    """
+    CLI entrypoint генератора синтетических Bronze-данных.
+    """
     p = argparse.ArgumentParser(description="Synthetic Gausium + maintenance data generator")
     p.add_argument("--days", type=int, default=180, help="Период симуляции в днях (по умолчанию 180)")
     p.add_argument("--out",  type=str, default="./data", help="Каталог для вывода (по умолчанию ./data)")
     p.add_argument("--seed", type=int, default=42, help="Seed для воспроизводимости")
+    p.add_argument("--start-date", type=str, help="Начальная дата периода YYYY-MM-DD")
+    p.add_argument("--end-date", type=str, help="Конечная дата периода YYYY-MM-DD")
     args = p.parse_args()
-    simulate(args.days, Path(args.out), args.seed)
+    simulate(
+        days=args.days,
+        out_dir=Path(args.out),
+        seed=args.seed,
+        start_date_arg=args.start_date,
+        end_date_arg=args.end_date,
+    )
 
 
 if __name__ == "__main__":

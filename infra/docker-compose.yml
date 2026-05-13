@@ -1,12 +1,12 @@
-version: "3.8"
-
 x-airflow-common: &airflow-common
-  build: ./airflow
+  build:
+    context: ..
+    dockerfile: docker/airflow/Dockerfile
   environment: &airflow-env
     AIRFLOW__CORE__EXECUTOR: LocalExecutor
     AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
     AIRFLOW__CORE__FERNET_KEY: "46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqDDho="
-    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "true"
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
     AIRFLOW__CORE__LOAD_EXAMPLES: "false"
     AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth"
     AIRFLOW__WEBSERVER__SECRET_KEY: "robopulse-secret-42"
@@ -19,10 +19,11 @@ x-airflow-common: &airflow-common
     AIRFLOW_CONN_SPARK_DEFAULT: '{"conn_type": "spark", "host": "spark://spark-master", "port": 7077}'
     # Java
     JAVA_HOME: "/usr/lib/jvm/java-17-openjdk-amd64"
+    PYTHONPATH: "/opt/airflow"
   volumes:
-    - ./airflow/dags:/opt/airflow/dags
-    - ./spark/jobs:/opt/airflow/spark_jobs
-    - ./generate_data.py:/opt/airflow/generate_data.py:ro
+    - ../airflow/dags:/opt/airflow/dags
+    - ../spark:/opt/airflow/spark:ro
+    - ../generate_data.py:/opt/airflow/generate_data.py:ro
     - airflow_logs:/opt/airflow/logs
     - airflow_plugins:/opt/airflow/plugins
   depends_on:
@@ -86,7 +87,9 @@ services:
 
   # ── Spark ────────────────────────────────────────────────────────────────────
   spark-master:
-    build: ../spark
+    build:
+      context: ..
+      dockerfile: docker/spark/Dockerfile
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.master.Master
     environment:
       SPARK_NO_DAEMONIZE: "true"
@@ -95,12 +98,14 @@ services:
       - "8080:8080"   # Spark Master Web UI
       - "7077:7077"   # Spark master port
     volumes:
-      - ./spark/jobs:/opt/spark/jobs
+      - ../spark:/opt/spark/robopulse/spark:ro
     networks:
       - robopulse_net
 
   spark-worker:
-    build: ../spark
+    build:
+      context: ..
+      dockerfile: docker/spark/Dockerfile
     command: /opt/spark/bin/spark-class org.apache.spark.deploy.worker.Worker spark://spark-master:7077
     environment:
       SPARK_NO_DAEMONIZE: "true"
@@ -109,7 +114,7 @@ services:
     depends_on:
       - spark-master
     volumes:
-      - ./spark/jobs:/opt/spark/jobs
+      - ../spark:/opt/spark/robopulse/spark:ro
     networks:
       - robopulse_net
 

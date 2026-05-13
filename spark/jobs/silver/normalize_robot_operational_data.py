@@ -8,10 +8,14 @@ PySpark job: Raw/Bronze JSON/JSONL → нормализованные ODS/Silver
 
 Запуск:
     spark-submit normalize_robot_operational_data.py \
-        s3a://robopulse/bronze \
-        s3a://robopulse/silver
+        --maintenance-events-path s3a://robopulse/bronze/maintenance_events/source=synthetic/load_dt=2026-04-30/*.json \
+        --task-reports-path s3a://robopulse/bronze/task_reports/source=gausium/load_dt=2026-04-30/*.json \
+        --robot-status-path s3a://robopulse/bronze/robot_status/source=gausium/load_dt=2026-04-30/*.jsonl \
+        --silver-path s3a://robopulse/silver \
+        --partition-dt 2026-04-30
 """
 
+import argparse
 import sys
 from collections.abc import Sequence
 
@@ -32,8 +36,78 @@ ROBOT_STATUS_TABLE = "robot_status"
 PARTITION_COLUMN = "dt"
 
 USAGE_MESSAGE = (
-    "Usage: normalize_robot_operational_data.py <bronze_path> <silver_path>"
+    "Usage: normalize_robot_operational_data.py "
+    "--maintenance-events-path <path> "
+    "--task-reports-path <path> "
+    "--robot-status-path <path> "
+    "--silver-path <path> "
+    "--partition-dt <YYYY-MM-DD>"
 )
+
+
+def split_paths(paths_arg: str) -> list[str]:
+    """
+    Разбивает CLI-аргумент со списком путей на отдельные значения.
+
+    Args:
+        paths_arg: Строка путей, разделенных запятыми.
+
+    Returns:
+        Непустой список путей без лишних пробелов.
+    """
+    return [path.strip() for path in paths_arg.split(",") if path.strip()]
+
+
+def resolve_existing_paths(
+    spark: SparkSession,
+    paths_arg: str,
+) -> list[str]:
+    """
+    Оставляет только существующие пути или glob-шаблоны.
+
+    Args:
+        spark: Активная SparkSession.
+        paths_arg: Один путь или список путей через запятую.
+
+    Returns:
+        Список путей, которые Spark сможет прочитать.
+    """
+    existing_paths = []
+    hadoop_conf = spark._jsc.hadoopConfiguration()
+
+    for raw_path in split_paths(paths_arg):
+        path = spark._jvm.org.apache.hadoop.fs.Path(raw_path)
+        fs = path.getFileSystem(hadoop_conf)
+        statuses = fs.globStatus(path)
+        if statuses is not None and len(statuses) > 0:
+            existing_paths.append(raw_path)
+
+    return existing_paths
+
+
+def require_existing_paths(
+    spark: SparkSession,
+    paths_arg: str,
+    dataset_name: str,
+) -> list[str]:
+    """
+    Проверяет, что обязательная входная партиция существует.
+
+    Args:
+        spark: Активная SparkSession.
+        paths_arg: Один путь или список путей через запятую.
+        dataset_name: Имя датасета для понятного сообщения об ошибке.
+
+    Returns:
+        Список существующих путей.
+    """
+    existing_paths = resolve_existing_paths(spark, paths_arg)
+    if not existing_paths:
+        raise FileNotFoundError(
+            f"Не найдена входная партиция {dataset_name}: {paths_arg}"
+        )
+
+    return existing_paths
 
 
 def deduplicate_by_row_number(
@@ -82,13 +156,21 @@ def write_partitioned_parquet(
     Returns:
         Количество записанных строк.
     """
+    records_count = df.count()
+    if records_count == 0:
+        return 0
+
+    df.sparkSession.conf.set(
+        "spark.sql.sources.partitionOverwriteMode",
+        "dynamic",
+    )
     df.write.mode("overwrite").partitionBy(partition_column).parquet(output_path)
-    return df.count()
+    return records_count
 
 
 def normalize_maintenance_events(
     spark: SparkSession,
-    bronze_path: str,
+    source_path: str,
     silver_path: str,
 ) -> int:
     """
@@ -107,14 +189,15 @@ def normalize_maintenance_events(
         - дедуплицируем по maintenance_id;
         - для дублей оставляем самую свежую версию по updated_at.
     """
-    source_path = (
-        f"{bronze_path}/maintenance_events/source=synthetic/load_dt=*/*.json"
-    )
     output_path = f"{silver_path}/{MAINTENANCE_EVENTS_TABLE}"
+    source_paths = resolve_existing_paths(spark, source_path)
+    if not source_paths:
+        print(f"maintenance_events: пустая партиция {source_path}")
+        return 0
 
     df = (
         spark.read.option("multiLine", True)
-        .json(source_path)
+        .json(source_paths)
         # В raw-файле бизнес-записи лежат внутри массива data.
         .select(F.explode("data").alias("rec"))
         .select(
@@ -161,7 +244,7 @@ def normalize_maintenance_events(
 
 def normalize_task_reports(
     spark: SparkSession,
-    bronze_path: str,
+    source_path: str,
     silver_path: str,
 ) -> int:
     """
@@ -181,17 +264,19 @@ def normalize_task_reports(
         - исключаем записи без report_id и start_time;
         - дедуплицируем по report_id.
     """
-    source_path = (
-        f"{bronze_path}/task_reports/source=gausium/load_dt=*/*.json"
-    )
     output_path = f"{silver_path}/{TASK_REPORTS_TABLE}"
+    source_paths = require_existing_paths(
+        spark=spark,
+        paths_arg=source_path,
+        dataset_name=TASK_REPORTS_TABLE,
+    )
 
     start_battery_pct = F.col("report.startBatteryPercentage").cast("integer")
     end_battery_pct = F.col("report.endBatteryPercentage").cast("integer")
 
     df = (
         spark.read.option("multiLine", True)
-        .json(source_path)
+        .json(source_paths)
         # data содержит страницы ответа API.
         .select(F.explode("data").alias("page"))
         # Каждая страница содержит список отчётов по заданиям роботов.
@@ -259,7 +344,7 @@ def normalize_task_reports(
 
 def normalize_robot_status(
     spark: SparkSession,
-    bronze_path: str,
+    source_path: str,
     silver_path: str,
 ) -> int:
     """
@@ -278,14 +363,16 @@ def normalize_robot_status(
         - исключаем записи без времени опроса и серийного номера;
         - дедуплицируем по паре serial_number + poll_ts.
     """
-    source_path = (
-        f"{bronze_path}/robot_status/source=gausium/load_dt=*/*.jsonl"
-    )
     output_path = f"{silver_path}/{ROBOT_STATUS_TABLE}"
+    source_paths = require_existing_paths(
+        spark=spark,
+        paths_arg=source_path,
+        dataset_name=ROBOT_STATUS_TABLE,
+    )
 
     df = (
         spark.read.option("mode", "DROPMALFORMED")
-        .json(source_path)
+        .json(source_paths)
         .select(
             F.col("serialNumber").alias("serial_number"),
             F.col("_poll_ts").alias("poll_ts"),
@@ -363,58 +450,102 @@ def normalize_robot_status(
 
 def run_pipeline(
     spark: SparkSession,
-    bronze_path: str,
+    maintenance_events_path: str,
+    task_reports_path: str,
+    robot_status_path: str,
     silver_path: str,
+    partition_dt: str,
 ) -> None:
     """
     Запускает полный пайплайн нормализации операционных данных роботов.
 
     Args:
         spark: Активная SparkSession.
-        bronze_path: Путь к Raw/Bronze-слою.
+        maintenance_events_path: Путь к Bronze-партиции maintenance_events.
+        task_reports_path: Путь к Bronze-партиции task_reports.
+        robot_status_path: Путь к Bronze-партиции robot_status.
         silver_path: Путь к ODS/Silver-слою.
+        partition_dt: Дата обрабатываемой бизнес-партиции.
     """
-    print(f"Bronze : {bronze_path}")
-    print(f"Silver : {silver_path}")
+    print(f"Partition          : {partition_dt}")
+    print(f"Maintenance events : {maintenance_events_path}")
+    print(f"Task reports       : {task_reports_path}")
+    print(f"Robot status       : {robot_status_path}")
+    print(f"Silver             : {silver_path}")
 
     jobs = [
-        ("maintenance_events", normalize_maintenance_events),
-        ("task_reports", normalize_task_reports),
-        ("robot_status", normalize_robot_status),
+        (
+            "maintenance_events",
+            normalize_maintenance_events,
+            maintenance_events_path,
+        ),
+        ("task_reports", normalize_task_reports, task_reports_path),
+        ("robot_status", normalize_robot_status, robot_status_path),
     ]
 
-    for index, (job_name, job_func) in enumerate(jobs, start=1):
+    for index, (job_name, job_func, source_path) in enumerate(jobs, start=1):
         print(f"[{index}/{len(jobs)}] {job_name} ...", flush=True)
 
         records_count = job_func(
             spark=spark,
-            bronze_path=bronze_path,
+            source_path=source_path,
             silver_path=silver_path,
         )
 
         print(f"{records_count} records")
 
 
+def parse_args() -> argparse.Namespace:
+    """
+    Разбирает аргументы CLI и сохраняет старый двухаргументный режим.
+
+    Returns:
+        Namespace с путями входных партиций и Silver-слоя.
+    """
+    if len(sys.argv) == 3 and not sys.argv[1].startswith("--"):
+        bronze_path, silver_path = sys.argv[1], sys.argv[2]
+        return argparse.Namespace(
+            maintenance_events_path=(
+                f"{bronze_path}/maintenance_events/"
+                "source=synthetic/load_dt=*/*.json"
+            ),
+            task_reports_path=(
+                f"{bronze_path}/task_reports/"
+                "source=gausium/load_dt=*/*.json"
+            ),
+            robot_status_path=(
+                f"{bronze_path}/robot_status/"
+                "source=gausium/load_dt=*/*.jsonl"
+            ),
+            silver_path=silver_path,
+            partition_dt="*",
+        )
+
+    parser = argparse.ArgumentParser(description=USAGE_MESSAGE)
+    parser.add_argument("--maintenance-events-path", required=True)
+    parser.add_argument("--task-reports-path", required=True)
+    parser.add_argument("--robot-status-path", required=True)
+    parser.add_argument("--silver-path", required=True)
+    parser.add_argument("--partition-dt", required=True)
+    return parser.parse_args()
+
+
 def main() -> None:
     """
     CLI entrypoint для spark-submit.
-
-    Ожидает два аргумента:
-        1. путь к Bronze/Raw-слою;
-        2. путь к Silver/ODS-слою.
     """
-    if len(sys.argv) != 3:
-        print(USAGE_MESSAGE)
-        sys.exit(1)
+    args = parse_args()
 
-    bronze_path, silver_path = sys.argv[1], sys.argv[2]
     spark = build_spark()
 
     try:
         run_pipeline(
             spark=spark,
-            bronze_path=bronze_path,
-            silver_path=silver_path,
+            maintenance_events_path=args.maintenance_events_path,
+            task_reports_path=args.task_reports_path,
+            robot_status_path=args.robot_status_path,
+            silver_path=args.silver_path,
+            partition_dt=args.partition_dt,
         )
         print("=== Silver complete ===")
     finally:
