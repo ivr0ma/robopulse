@@ -309,9 +309,16 @@ sudo docker compose -f infra/docker-compose.yml -p robopulse ps
 
 ### 4. Запуск пайплайна
 
+После старта `robopulse_pipeline` запускается **автоматически**: scheduler обнаруживает
+5 пропущенных daily-запусков (`catchup=True`, `start_date=2026-05-11`) и ставит их в очередь.
+Вручную ничего триггерить не нужно.
+
+Для запуска за произвольную дату вручную:
+
 ```bash
 sudo docker exec robopulse-airflow-scheduler-1 \
-  airflow dags trigger robopulse_pipeline
+  airflow dags trigger robopulse_pipeline \
+  --conf '{"partition_dt": "2026-05-16"}'
 ```
 
 Или через веб-интерфейс Airflow (см. адреса ниже): **DAGs → robopulse_pipeline → Trigger**.
@@ -319,13 +326,15 @@ sudo docker exec robopulse-airflow-scheduler-1 \
 ### 5. Мониторинг выполнения
 
 ```bash
-# Статус последнего запуска (выполнять периодически)
+# Статус всех запусков (включая backfill)
 sudo docker exec robopulse-airflow-scheduler-1 \
   airflow dags list-runs -d robopulse_pipeline
 
 # Логи планировщика в реальном времени
 sudo docker compose -f infra/docker-compose.yml -p robopulse logs -f airflow-scheduler
 ```
+
+> `make status` скрывает backfill-запуски (флаг `--no-backfill`). Для полной картины используйте команду выше или UI.
 
 Ожидаемое время выполнения на рекомендуемом железе:
 
