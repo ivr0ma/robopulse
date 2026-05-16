@@ -11,8 +11,8 @@ BRONZE_S3 = f"s3a://{MINIO_BUCKET}/bronze"
 SILVER_S3 = f"s3a://{MINIO_BUCKET}/silver"
 GOLD_S3 = f"s3a://{MINIO_BUCKET}/gold"
 
-PARTITION_DT = "{{ dag_run.conf.get('partition_dt', macros.ds_add(ds, -1)) }}"
-PARTITION_EXPR = "dag_run.conf.get('partition_dt', macros.ds_add(ds, -1))"
+PARTITION_DT = "{{ dag_run.conf.get('partition_dt', ds) }}"
+PARTITION_EXPR = "dag_run.conf.get('partition_dt', ds)"
 
 JARS = (
     "/opt/spark-jars/hadoop-aws-3.3.4.jar,"

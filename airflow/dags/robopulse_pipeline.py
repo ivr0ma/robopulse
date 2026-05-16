@@ -10,9 +10,9 @@ with DAG(
     dag_id="robopulse_pipeline",
     description="Управляющий DAG Robopulse: Source -> Silver -> Gold",
     default_args=DEFAULT_ARGS,
-    start_date=datetime(2026, 1, 1),
-    schedule_interval=None,
-    catchup=False,
+    start_date=datetime(2026, 5, 11),
+    schedule_interval="@daily",
+    catchup=True,
     tags=["robopulse", "orchestration"],
 ) as dag:
     run_source = TriggerDagRunOperator(
