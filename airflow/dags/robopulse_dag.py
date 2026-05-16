@@ -119,7 +119,7 @@ def silver_paths_template(
     return (
         "{{ partition_paths('"
         f"{SILVER_S3}', '{table_name}', {PARTITION_EXPR}, "
-        f"{days_back}, {days_forward}) }}"
+        f"{days_back}, {days_forward}) }}}}"
     )
 
 
