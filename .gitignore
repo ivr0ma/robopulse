@@ -4,3 +4,7 @@
 __pycache__/
 *.pyc
 .env
+.idea/
+.bkp
+.DS_Store
+CODEX_PROJECT_CONTEXT.md
