@@ -46,7 +46,11 @@ robopulse/
 │
 ├── airflow/
 │   └── dags/
-│       └── robopulse_dag.py    # DAG'и: source, silver, gold, pipeline
+│       ├── common.py               # Общие константы и утилиты (SPARK_CONF, JARS, partition_paths)
+│       ├── robopulse_source.py     # DAG: генерация Bronze-партиции
+│       ├── robopulse_silver.py     # DAG: Bronze → Silver
+│       ├── robopulse_gold.py       # DAG: Silver → Gold
+│       └── robopulse_pipeline.py   # DAG: оркестратор (Source → Silver → Gold)
 │
 ├── docker/
 │   ├── airflow/Dockerfile      # Airflow + Java + pyspark + boto3
